@@ -9,6 +9,11 @@ import (
 	"github.com/pkg/errors"
 )
 
+const (
+	ResourceRole  = "ROLE"
+	ResourceRoles = "ROLES"
+)
+
 // Compile-time proof of interface implementation.
 var _ Roles = (*roles)(nil)
 
@@ -23,8 +28,10 @@ type Roles interface {
 	Read(ctx context.Context, role string) (*Role, error)
 	// Update attributes of an existing role.
 	Update(ctx context.Context, role string, options RoleUpdateOptions) (*Role, error)
-	// Delete an role by its name.
+	// Delete a role by its name.
 	Delete(ctx context.Context, role string) error
+	// Rename a role name.
+	Rename(ctx context.Context, old string, new string) error
 }
 
 // roles implements Roles
@@ -76,7 +83,11 @@ func (e *roleEntity) toRole() *Role {
 
 // RoleListOptions represents the options for listing roles.
 type RoleListOptions struct {
+	// Required: Filters the command output by object name
 	Pattern string
+
+	// Optional: Limits the maximum number of rows returned
+	Limit *int
 }
 
 func (o RoleListOptions) validate() error {
@@ -117,7 +128,7 @@ func (r *roles) List(ctx context.Context, options RoleListOptions) ([]*Role, err
 		return nil, fmt.Errorf("validate list options: %w", err)
 	}
 
-	sql := fmt.Sprintf(`SHOW ROLES LIKE '%s'`, options.Pattern)
+	sql := fmt.Sprintf("SHOW %s LIKE '%s'", ResourceRoles, options.Pattern)
 	rows, err := r.client.query(ctx, sql)
 	if err != nil {
 		return nil, fmt.Errorf("do query: %w", err)
@@ -135,26 +146,16 @@ func (r *roles) List(ctx context.Context, options RoleListOptions) ([]*Role, err
 	return entities, nil
 }
 
-// Read an role by its name.
+// Read a role by its name.
 func (r *roles) Read(ctx context.Context, role string) (*Role, error) {
-	sql := fmt.Sprintf(`SHOW ROLES LIKE '%s'`, role)
-	rows, err := r.client.query(ctx, sql)
-	if err != nil {
-		return nil, fmt.Errorf("do query: %w", err)
-	}
-	defer rows.Close()
-
-	if !rows.Next() {
-		return nil, nil
-	}
 	var entity roleEntity
-	if err := rows.StructScan(&entity); err != nil {
-		return nil, fmt.Errorf("rows scan: %w", err)
+	if err := r.client.read(ctx, ResourceRoles, role, &entity); err != nil {
+		return nil, err
 	}
 	return entity.toRole(), nil
 }
 
-func (r *roles) formatRoleProperties(properties *RoleProperties) string {
+func (*roles) formatRoleProperties(properties *RoleProperties) string {
 	var s string
 	if properties.Comment != nil {
 		s = s + " comment='" + *properties.Comment + "'"
@@ -163,40 +164,49 @@ func (r *roles) formatRoleProperties(properties *RoleProperties) string {
 }
 
 // Update attributes of an existing role.
-func (r *roles) Update(ctx context.Context, role string, opts RoleUpdateOptions) (*Role, error) {
+func (r *roles) Update(ctx context.Context, role string, options RoleUpdateOptions) (*Role, error) {
 	if role == "" {
-		return nil, errors.New("name must not be empty")
+		return nil, errors.New("role name must not be empty")
 	}
-	sql := fmt.Sprintf("ALTER ROLE %s SET", role)
-	if opts.RoleProperties != nil {
-		sql = sql + r.formatRoleProperties(opts.RoleProperties)
+	sql := fmt.Sprintf("ALTER %s %s SET", ResourceRole, role)
+	if options.RoleProperties != nil {
+		sql = sql + r.formatRoleProperties(options.RoleProperties)
 	}
 	if _, err := r.client.exec(ctx, sql); err != nil {
 		return nil, fmt.Errorf("db exec: %w", err)
 	}
-	return r.Read(ctx, role)
+	var entity roleEntity
+	if err := r.client.read(ctx, ResourceRoles, role, &entity); err != nil {
+		return nil, err
+	}
+	return entity.toRole(), nil
 }
 
 // Create a new role with the given options.
-func (r *roles) Create(ctx context.Context, opts RoleCreateOptions) (*Role, error) {
-	if err := opts.validate(); err != nil {
+func (r *roles) Create(ctx context.Context, options RoleCreateOptions) (*Role, error) {
+	if err := options.validate(); err != nil {
 		return nil, fmt.Errorf("validate create options: %w", err)
 	}
-	sql := fmt.Sprintf("CREATE ROLE %s", opts.Name)
-	if opts.RoleProperties != nil {
-		sql = sql + r.formatRoleProperties(opts.RoleProperties)
+	sql := fmt.Sprintf("CREATE %s %s", ResourceRole, options.Name)
+	if options.RoleProperties != nil {
+		sql = sql + r.formatRoleProperties(options.RoleProperties)
 	}
 	if _, err := r.client.exec(ctx, sql); err != nil {
 		return nil, fmt.Errorf("db exec: %w", err)
 	}
-	return r.Read(ctx, opts.Name)
+	var entity roleEntity
+	if err := r.client.read(ctx, ResourceRoles, options.Name, &entity); err != nil {
+		return nil, err
+	}
+	return entity.toRole(), nil
 }
 
-// Delete an role by its name.
+// Delete a role by its name.
 func (r *roles) Delete(ctx context.Context, role string) error {
-	sql := fmt.Sprintf(`DROP ROLE %s`, role)
-	if _, err := r.client.exec(ctx, sql); err != nil {
-		return fmt.Errorf("db exec: %w", err)
-	}
-	return nil
+	return r.client.drop(ctx, ResourceRole, role)
+}
+
+// Rename a role name.
+func (r *roles) Rename(ctx context.Context, old string, new string) error {
+	return r.client.rename(ctx, ResourceRole, old, new)
 }

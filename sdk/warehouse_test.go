@@ -9,6 +9,7 @@ func (ts *testSuite) createWarehouse() (*Warehouse, error) {
 	options := WarehouseCreateOptions{
 		Name: "WAREHOUSE_TEST",
 		WarehouseProperties: &WarehouseProperties{
+			WarehouseType:   String("STANDARD"),
 			WarehouseSize:   String("SMALL"),
 			MaxClusterCount: Int32(5),
 			MinClusterCount: Int32(5),
@@ -25,9 +26,13 @@ func (ts *testSuite) TestListWarehouse() {
 	warehouse, err := ts.createWarehouse()
 	ts.NoError(err)
 
-	warehouses, err := ts.client.Warehouses.List(context.Background(), WarehouseListOptions{Pattern: "WAREHOUSE%"})
+	limit := 1
+	warehouses, err := ts.client.Warehouses.List(context.Background(), WarehouseListOptions{
+		Pattern: "WAREHOUSE%",
+		Limit:   Int(limit),
+	})
 	ts.NoError(err)
-	ts.Equal(1, len(warehouses))
+	ts.Equal(limit, len(warehouses))
 
 	ts.NoError(ts.client.Warehouses.Delete(context.Background(), warehouse.Name))
 }
@@ -72,5 +77,22 @@ func (ts *testSuite) TestUpdateWarehouse() {
 	ts.Equal(*options.WarehouseProperties.AutoSuspend, afterUpdate.AutoSuspend)
 	ts.Equal(*options.WarehouseProperties.Comment, afterUpdate.Comment)
 
+	ts.NoError(ts.client.Warehouses.Delete(context.Background(), warehouse.Name))
+}
+
+func (ts *testSuite) TestRenameWarehouse() {
+	warehouse, err := ts.createWarehouse()
+	ts.NoError(err)
+
+	newWarehouse := "NEW_WAREHOUSE_TEST"
+	ts.NoError(ts.client.Warehouses.Rename(context.Background(), warehouse.Name, newWarehouse))
+	ts.NoError(ts.client.Warehouses.Delete(context.Background(), newWarehouse))
+}
+
+func (ts *testSuite) TestUseWarehouse() {
+	warehouse, err := ts.createWarehouse()
+	ts.NoError(err)
+
+	ts.NoError(ts.client.Warehouses.Use(context.Background(), warehouse.Name))
 	ts.NoError(ts.client.Warehouses.Delete(context.Background(), warehouse.Name))
 }

@@ -9,6 +9,11 @@ import (
 	"github.com/pkg/errors"
 )
 
+const (
+	ResourceUser  = "USER"
+	ResourceUsers = "USERS"
+)
+
 // Compile-time proof of interface implementation.
 var _ Users = (*users)(nil)
 
@@ -25,6 +30,10 @@ type Users interface {
 	Update(ctx context.Context, user string, options UserUpdateOptions) (*User, error)
 	// Delete an user by its name.
 	Delete(ctx context.Context, user string) error
+	// Rename an user name.
+	Rename(ctx context.Context, old string, new string) error
+	// Reset an user's password.
+	ResetPassword(ctx context.Context, user string) (*ResetPasswordResult, error)
 }
 
 // users implements Users
@@ -65,6 +74,10 @@ type userEntity struct {
 	LoginName             sql.NullString `db:"login_name"`
 }
 
+type ResetPasswordResult struct {
+	Status string `db:"status"`
+}
+
 func (e *userEntity) toUser() *User {
 	var roles []string
 	if e.DefaultSecondaryRoles.Valid {
@@ -90,7 +103,11 @@ func (e *userEntity) toUser() *User {
 
 // UserListOptions represents the options for listing users.
 type UserListOptions struct {
+	// Required: Filters the command output by object name
 	Pattern string
+
+	// Optional: Limits the maximum number of rows returned
+	Limit *int
 }
 
 func (o UserListOptions) validate() error {
@@ -151,7 +168,7 @@ type UserCreateOptions struct {
 
 func (o UserCreateOptions) validate() error {
 	if o.Name == "" {
-		return errors.New("name must not be empty")
+		return errors.New("user name must not be empty")
 	}
 	return nil
 }
@@ -167,7 +184,7 @@ func (u *users) List(ctx context.Context, options UserListOptions) ([]*User, err
 		return nil, fmt.Errorf("validate list options: %w", err)
 	}
 
-	sql := fmt.Sprintf(`SHOW USERS LIKE '%s'`, options.Pattern)
+	sql := fmt.Sprintf("SHOW %s LIKE '%s'", ResourceUsers, options.Pattern)
 	rows, err := u.client.query(ctx, sql)
 	if err != nil {
 		return nil, fmt.Errorf("do query: %w", err)
@@ -187,24 +204,14 @@ func (u *users) List(ctx context.Context, options UserListOptions) ([]*User, err
 
 // Read an user by its name.
 func (u *users) Read(ctx context.Context, user string) (*User, error) {
-	sql := fmt.Sprintf(`SHOW USERS LIKE '%s'`, user)
-	rows, err := u.client.query(ctx, sql)
-	if err != nil {
-		return nil, fmt.Errorf("do query: %w", err)
-	}
-	defer rows.Close()
-
-	if !rows.Next() {
-		return nil, nil
-	}
 	var entity userEntity
-	if err := rows.StructScan(&entity); err != nil {
-		return nil, fmt.Errorf("rows scan: %w", err)
+	if err := u.client.read(ctx, ResourceUsers, user, &entity); err != nil {
+		return nil, err
 	}
 	return entity.toUser(), nil
 }
 
-func (u *users) formatUserProperties(properties *UserProperties) string {
+func (*users) formatUserProperties(properties *UserProperties) string {
 	var s string
 	if properties.LoginName != nil {
 		s = s + " login_name='" + *properties.LoginName + "'"
@@ -240,10 +247,7 @@ func (u *users) formatUserProperties(properties *UserProperties) string {
 		s = s + " default_role='" + *properties.DefaultRole + "'"
 	}
 	if properties.DefaultSecondaryRoles != nil {
-		roles := []string{}
-		for _, role := range *properties.DefaultSecondaryRoles {
-			roles = append(roles, "'"+role+"'")
-		}
+		roles := addQuote(*properties.DefaultSecondaryRoles)
 		s = s + " default_secondary_roles=(" + strings.Join(roles, ",") + ")"
 	}
 	if properties.Comment != nil {
@@ -257,14 +261,18 @@ func (u *users) Update(ctx context.Context, user string, options UserUpdateOptio
 	if user == "" {
 		return nil, errors.New("name must not be empty")
 	}
-	sql := fmt.Sprintf("ALTER USER %s SET", user)
+	sql := fmt.Sprintf("ALTER %s %s SET", ResourceUser, user)
 	if options.UserProperties != nil {
 		sql = sql + u.formatUserProperties(options.UserProperties)
 	}
 	if _, err := u.client.exec(ctx, sql); err != nil {
 		return nil, fmt.Errorf("db exec: %w", err)
 	}
-	return u.Read(ctx, user)
+	var entity userEntity
+	if err := u.client.read(ctx, ResourceUsers, user, &entity); err != nil {
+		return nil, err
+	}
+	return entity.toUser(), nil
 }
 
 // Create a new user with the given options.
@@ -272,21 +280,45 @@ func (u *users) Create(ctx context.Context, options UserCreateOptions) (*User, e
 	if err := options.validate(); err != nil {
 		return nil, fmt.Errorf("validate create options: %w", err)
 	}
-	sql := fmt.Sprintf("CREATE USER %s", options.Name)
+	sql := fmt.Sprintf("CREATE %s %s", ResourceUser, options.Name)
 	if options.UserProperties != nil {
 		sql = sql + u.formatUserProperties(options.UserProperties)
 	}
 	if _, err := u.client.exec(ctx, sql); err != nil {
 		return nil, fmt.Errorf("db exec: %w", err)
 	}
-	return u.Read(ctx, options.Name)
+	var entity userEntity
+	if err := u.client.read(ctx, ResourceUsers, options.Name, &entity); err != nil {
+		return nil, err
+	}
+	return entity.toUser(), nil
 }
 
 // Delete an user by its name.
 func (u *users) Delete(ctx context.Context, user string) error {
-	sql := fmt.Sprintf(`DROP USER %s`, user)
-	if _, err := u.client.exec(ctx, sql); err != nil {
-		return fmt.Errorf("db exec: %w", err)
+	return u.client.drop(ctx, ResourceUser, user)
+}
+
+// Rename an user name.
+func (u *users) Rename(ctx context.Context, old string, new string) error {
+	return u.client.rename(ctx, ResourceUser, old, new)
+}
+
+// Reset an user's password.
+func (u *users) ResetPassword(ctx context.Context, user string) (*ResetPasswordResult, error) {
+	sql := fmt.Sprintf("ALTER %s %s RESET PASSWORD;", ResourceUser, user)
+	rows, err := u.client.query(ctx, sql)
+	if err != nil {
+		return nil, fmt.Errorf("do query: %w", err)
 	}
-	return nil
+	defer rows.Close()
+
+	if !rows.Next() {
+		return nil, ErrNoRecord
+	}
+	var result ResetPasswordResult
+	if err := rows.StructScan(&result); err != nil {
+		return nil, fmt.Errorf("rows scan: %w", err)
+	}
+	return &result, err
 }

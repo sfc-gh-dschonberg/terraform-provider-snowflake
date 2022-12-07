@@ -9,6 +9,11 @@ import (
 	"github.com/pkg/errors"
 )
 
+const (
+	ResourceWarehouse  = "WAREHOUSE"
+	ResourceWarehouses = "WAREHOUSES"
+)
+
 // Compile-time proof of interface implementation.
 var _ Warehouses = (*warehouses)(nil)
 
@@ -23,8 +28,12 @@ type Warehouses interface {
 	Read(ctx context.Context, warehouse string) (*Warehouse, error)
 	// Update attributes of an existing warehouse.
 	Update(ctx context.Context, warehouse string, options WarehouseUpdateOptions) (*Warehouse, error)
-	// Delete an warehouse by its name.
+	// Delete a warehouse by its name.
 	Delete(ctx context.Context, warehouse string) error
+	// Rename a warehouse name.
+	Rename(ctx context.Context, old string, new string) error
+	// Use the active/current warehouse for the session.
+	Use(ctx context.Context, warehouse string) error
 }
 
 // warehouses implements Warehouses
@@ -137,6 +146,9 @@ func (w *warehouseEntity) toWarehouse() *Warehouse {
 }
 
 type WarehouseProperties struct {
+	// Optional: Specifies the warehouse type.
+	WarehouseType *string
+
 	// Optional: Specifies the size of the virtual warehouse.
 	WarehouseSize *string
 
@@ -161,7 +173,11 @@ type WarehouseProperties struct {
 
 // WarehouseListOptions represents the options for listing warehouses.
 type WarehouseListOptions struct {
+	// Required: Filters the command output by object name
 	Pattern string
+
+	// Optional: Limits the maximum number of rows returned
+	Limit *int
 }
 
 func (o WarehouseListOptions) validate() error {
@@ -181,7 +197,7 @@ type WarehouseCreateOptions struct {
 
 func (o WarehouseCreateOptions) validate() error {
 	if o.Name == "" {
-		return errors.New("name must not be empty")
+		return errors.New("warehouse name must not be empty")
 	}
 	return nil
 }
@@ -197,7 +213,10 @@ func (w *warehouses) List(ctx context.Context, options WarehouseListOptions) ([]
 		return nil, fmt.Errorf("validate list options: %w", err)
 	}
 
-	sql := fmt.Sprintf(`SHOW WAREHOUSES LIKE '%s'`, options.Pattern)
+	sql := fmt.Sprintf("SHOW %s LIKE '%s'", ResourceWarehouses, options.Pattern)
+	if options.Limit != nil {
+		sql = sql + fmt.Sprintf(" LIMIT %d", *options.Limit)
+	}
 	rows, err := w.client.query(ctx, sql)
 	if err != nil {
 		return nil, fmt.Errorf("do query: %w", err)
@@ -215,8 +234,11 @@ func (w *warehouses) List(ctx context.Context, options WarehouseListOptions) ([]
 	return entities, nil
 }
 
-func (w *warehouses) formatWarehouseProperties(properties *WarehouseProperties) string {
+func (*warehouses) formatWarehouseProperties(properties *WarehouseProperties) string {
 	var s string
+	if properties.WarehouseType != nil {
+		s = s + " warehouse_type='" + *properties.WarehouseType + "'"
+	}
 	if properties.WarehouseSize != nil {
 		s = s + " warehouse_size='" + *properties.WarehouseSize + "'"
 	}
@@ -246,31 +268,25 @@ func (w *warehouses) Create(ctx context.Context, options WarehouseCreateOptions)
 	if err := options.validate(); err != nil {
 		return nil, fmt.Errorf("validate create options: %w", err)
 	}
-	sql := fmt.Sprintf("CREATE WAREHOUSE %s", options.Name)
+	sql := fmt.Sprintf("CREATE %s %s", ResourceWarehouse, options.Name)
 	if options.WarehouseProperties != nil {
 		sql = sql + w.formatWarehouseProperties(options.WarehouseProperties)
 	}
 	if _, err := w.client.exec(ctx, sql); err != nil {
 		return nil, fmt.Errorf("db exec: %w", err)
 	}
-	return w.Read(ctx, options.Name)
+	var entity warehouseEntity
+	if err := w.client.read(ctx, ResourceWarehouses, options.Name, &entity); err != nil {
+		return nil, err
+	}
+	return entity.toWarehouse(), nil
 }
 
 // Read an warehouse by its name.
 func (w *warehouses) Read(ctx context.Context, warehouse string) (*Warehouse, error) {
-	sql := fmt.Sprintf(`SHOW WAREHOUSES LIKE '%s'`, warehouse)
-	rows, err := w.client.query(ctx, sql)
-	if err != nil {
-		return nil, fmt.Errorf("do query: %w", err)
-	}
-	defer rows.Close()
-
-	if !rows.Next() {
-		return nil, nil
-	}
 	var entity warehouseEntity
-	if err := rows.StructScan(&entity); err != nil {
-		return nil, fmt.Errorf("rows scan: %w", err)
+	if err := w.client.read(ctx, ResourceWarehouses, warehouse, &entity); err != nil {
+		return nil, err
 	}
 	return entity.toWarehouse(), nil
 }
@@ -280,21 +296,31 @@ func (w *warehouses) Update(ctx context.Context, warehouse string, options Wareh
 	if warehouse == "" {
 		return nil, errors.New("name must not be empty")
 	}
-	sql := fmt.Sprintf("ALTER WAREHOUSE %s SET", warehouse)
+	sql := fmt.Sprintf("ALTER %s %s SET", ResourceWarehouse, warehouse)
 	if options.WarehouseProperties != nil {
 		sql = sql + w.formatWarehouseProperties(options.WarehouseProperties)
 	}
 	if _, err := w.client.exec(ctx, sql); err != nil {
 		return nil, fmt.Errorf("db exec: %w", err)
 	}
-	return w.Read(ctx, warehouse)
+	var entity warehouseEntity
+	if err := w.client.read(ctx, ResourceWarehouses, warehouse, &entity); err != nil {
+		return nil, err
+	}
+	return entity.toWarehouse(), nil
 }
 
-// Delete an warehouse by its name.
+// Delete a warehouse by its name.
 func (w *warehouses) Delete(ctx context.Context, warehouse string) error {
-	sql := fmt.Sprintf(`DROP WAREHOUSE %s`, warehouse)
-	if _, err := w.client.exec(ctx, sql); err != nil {
-		return fmt.Errorf("db exec: %w", err)
-	}
-	return nil
+	return w.client.drop(ctx, ResourceWarehouse, warehouse)
+}
+
+// Rename a warehouse name.
+func (w *warehouses) Rename(ctx context.Context, old string, new string) error {
+	return w.client.rename(ctx, ResourceWarehouse, old, new)
+}
+
+// Use the active/current warehouse for the session.
+func (w *warehouses) Use(ctx context.Context, warehouse string) error {
+	return w.client.use(ctx, ResourceWarehouse, warehouse)
 }

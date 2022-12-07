@@ -11,7 +11,7 @@ func (ts *testSuite) createUser() (*User, error) {
 		UserProperties: &UserProperties{
 			FirstName:             String("John"),
 			LastName:              String("Hi"),
-			Comment:               String("test account"),
+			Comment:               String("test user"),
 			DefaultSecondaryRoles: StringSlice([]string{"ALL", "READ", "WRITE"}),
 			Disabled:              Bool(false),
 		},
@@ -23,9 +23,13 @@ func (ts *testSuite) TestListUser() {
 	user, err := ts.createUser()
 	ts.NoError(err)
 
-	users, err := ts.client.Users.List(context.Background(), UserListOptions{Pattern: "USER%"})
+	limit := 1
+	users, err := ts.client.Users.List(context.Background(), UserListOptions{
+		Pattern: "USER%",
+		Limit:   Int(1),
+	})
 	ts.NoError(err)
-	ts.Equal(1, len(users))
+	ts.Equal(limit, len(users))
 
 	ts.NoError(ts.client.Users.Delete(context.Background(), user.Name))
 }
@@ -64,5 +68,24 @@ func (ts *testSuite) TestUpdateUser() {
 	ts.Equal(*options.UserProperties.FirstName, afterUpdate.FirstName)
 	ts.Equal(*options.UserProperties.LastName, afterUpdate.LastName)
 
+	ts.NoError(ts.client.Users.Delete(context.Background(), user.Name))
+}
+
+func (ts *testSuite) TestRenameUser() {
+	user, err := ts.createUser()
+	ts.NoError(err)
+
+	newUser := "NEW_USER_TEST"
+	ts.NoError(ts.client.Users.Rename(context.Background(), user.Name, newUser))
+	ts.NoError(ts.client.Users.Delete(context.Background(), newUser))
+}
+
+func (ts *testSuite) TestResetPassword() {
+	user, err := ts.createUser()
+	ts.NoError(err)
+
+	result, err := ts.client.Users.ResetPassword(context.Background(), user.Name)
+	ts.NoError(err)
+	ts.NotEmpty(result.Status)
 	ts.NoError(ts.client.Users.Delete(context.Background(), user.Name))
 }
