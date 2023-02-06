@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.56.4](https://github.com/Snowflake-Labs/terraform-provider-snowflake/compare/v0.56.3...v0.56.4) (2023-02-06)
+
+
+### BugFixes
+
+* add nill check for grant_helpers ([#1518](https://github.com/Snowflake-Labs/terraform-provider-snowflake/issues/1518)) ([87689bb](https://github.com/Snowflake-Labs/terraform-provider-snowflake/commit/87689bb5b60c73bfe3d741c3da6f4f544f16aa45))
+* future read on grants ([#1520](https://github.com/Snowflake-Labs/terraform-provider-snowflake/issues/1520)) ([db78f64](https://github.com/Snowflake-Labs/terraform-provider-snowflake/commit/db78f64e56d228f3236b6bdefbe9a9c18c8641e1))
+
 ## [0.56.3](https://github.com/Snowflake-Labs/terraform-provider-snowflake/compare/v0.56.2...v0.56.3) (2023-02-02)
 
 
